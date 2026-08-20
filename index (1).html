@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TikTok Auto Post</title>
+<style>
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+    max-width: 480px;
+    margin: 60px auto;
+    padding: 0 24px;
+    text-align: center;
+    color: #161823;
+  }
+  h1 { font-size: 24px; margin-bottom: 8px; }
+  p.subtitle { color: #666; margin-bottom: 40px; }
+
+  .card {
+    border: 1px solid #eee;
+    border-radius: 12px;
+    padding: 24px;
+    margin-bottom: 20px;
+    text-align: left;
+  }
+  .card h3 { margin-top: 0; font-size: 16px; }
+  .status {
+    font-size: 13px;
+    color: #888;
+    margin-top: 8px;
+  }
+  .status.connected { color: #25d366; font-weight: 600; }
+
+  button {
+    width: 100%;
+    padding: 14px;
+    border: none;
+    border-radius: 8px;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    margin-top: 10px;
+  }
+  .btn-login {
+    background: #000;
+    color: #fff;
+  }
+  .btn-login:hover { background: #333; }
+  .btn-publish {
+    background: #fe2c55;
+    color: #fff;
+  }
+  .btn-publish:hover { background: #e0264a; }
+  .btn-publish:disabled {
+    background: #ccc;
+    cursor: not-allowed;
+  }
+
+  #videoPreview {
+    width: 100%;
+    border-radius: 8px;
+    margin-top: 12px;
+    display: none;
+  }
+
+  #log {
+    font-size: 12px;
+    color: #888;
+    margin-top: 20px;
+    text-align: left;
+    white-space: pre-wrap;
+    max-height: 150px;
+    overflow-y: auto;
+  }
+</style>
+</head>
+<body>
+
+<h1>TikTok Auto Post</h1>
+<p class="subtitle">Connect your TikTok account and publish a video.</p>
+
+<div class="card">
+  <h3>1. Connect your TikTok account</h3>
+  <div id="loginStatus" class="status">Not connected</div>
+  <button id="loginBtn" class="btn-login">Login with TikTok</button>
+</div>
+
+<div class="card">
+  <h3>2. Select a video</h3>
+  <video id="videoPreview" controls></video>
+  <button id="selectBtn" class="btn-login" style="background:#555;">Choose Video</button>
+  <input type="file" id="fileInput" accept="video/mp4,video/quicktime" style="display:none;">
+</div>
+
+<div class="card">
+  <h3>3. Publish</h3>
+  <button id="publishBtn" class="btn-publish" disabled>Publish to TikTok</button>
+</div>
+
+<div id="log"></div>
+
+<script>
+/* =========================================================
+   CONFIG — 3ammar hadchi 9bel matst3ml safha:
+   ========================================================= */
+const TIKTOK_CLIENT_KEY = "PUT_YOUR_CLIENT_KEY_HERE";      // Client Key mn TikTok Developer Portal
+const REDIRECT_URI = "PUT_YOUR_REDIRECT_URI_HERE";          // l'URL li TikTok ghad i redirect liha (khass tkoun https)
+const N8N_WEBHOOK_URL = "PUT_YOUR_N8N_WEBHOOK_URL_HERE";     // Webhook URL dial n8n (Webhook node bdl Schedule Trigger)
+/* ========================================================= */
+
+const log = (msg) => {
+  const el = document.getElementById('log');
+  el.textContent += msg + "\n";
+  el.scrollTop = el.scrollHeight;
+};
+
+// ---- 1. Login with TikTok (OAuth) ----
+document.getElementById('loginBtn').addEventListener('click', () => {
+  const state = Math.random().toString(36).substring(2);
+  sessionStorage.setItem('tiktok_oauth_state', state);
+
+  const authUrl = `https://www.tiktok.com/v2/auth/authorize/`
+    + `?client_key=${TIKTOK_CLIENT_KEY}`
+    + `&scope=video.publish`
+    + `&response_type=code`
+    + `&redirect_uri=${encodeURIComponent(REDIRECT_URI)}`
+    + `&state=${state}`;
+
+  log("Redirecting to TikTok login...");
+  window.location.href = authUrl;
+});
+
+// ---- Check if we came back from TikTok with a code ----
+window.addEventListener('DOMContentLoaded', () => {
+  const params = new URLSearchParams(window.location.search);
+  const code = params.get('code');
+  if (code) {
+    document.getElementById('loginStatus').textContent = "Connected ✓";
+    document.getElementById('loginStatus').classList.add('connected');
+    sessionStorage.setItem('tiktok_auth_code', code);
+    log("TikTok login successful. Code received.");
+  }
+});
+
+// ---- 2. Select video ----
+document.getElementById('selectBtn').addEventListener('click', () => {
+  document.getElementById('fileInput').click();
+});
+
+let selectedFile = null;
+document.getElementById('fileInput').addEventListener('change', (e) => {
+  selectedFile = e.target.files[0];
+  if (selectedFile) {
+    const url = URL.createObjectURL(selectedFile);
+    const preview = document.getElementById('videoPreview');
+    preview.src = url;
+    preview.style.display = 'block';
+    document.getElementById('publishBtn').disabled = false;
+    log("Video selected: " + selectedFile.name);
+  }
+});
+
+// ---- 3. Publish (send to n8n webhook) ----
+document.getElementById('publishBtn').addEventListener('click', async () => {
+  const authCode = sessionStorage.getItem('tiktok_auth_code');
+  if (!authCode) {
+    log("Error: please login with TikTok first.");
+    return;
+  }
+  if (!selectedFile) {
+    log("Error: please select a video first.");
+    return;
+  }
+
+  document.getElementById('publishBtn').disabled = true;
+  document.getElementById('publishBtn').textContent = "Publishing...";
+  log("Sending video to workflow...");
+
+  const formData = new FormData();
+  formData.append('video', selectedFile);
+  formData.append('auth_code', authCode);
+
+  try {
+    const res = await fetch(N8N_WEBHOOK_URL, {
+      method: 'POST',
+      body: formData
+    });
+    if (res.ok) {
+      log("✅ Published successfully!");
+      document.getElementById('publishBtn').textContent = "Published ✓";
+    } else {
+      log("❌ Error publishing: " + res.status);
+      document.getElementById('publishBtn').disabled = false;
+      document.getElementById('publishBtn').textContent = "Publish to TikTok";
+    }
+  } catch (err) {
+    log("❌ Network error: " + err.message);
+    document.getElementById('publishBtn').disabled = false;
+    document.getElementById('publishBtn').textContent = "Publish to TikTok";
+  }
+});
+</script>
+
+</body>
+</html>
